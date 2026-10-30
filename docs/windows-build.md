@@ -48,6 +48,9 @@ folder creates separate sync history, so keep the EXE and its data folder togeth
 The folder must support Windows permissions and hard links (use a local NTFS
 folder). Do not run the app as administrator.
 
+When sharing a build, include the project's `LICENSE.txt` from `dist/` alongside
+the EXE. Third-party license obligations still apply.
+
 `dist/` also contains a SHA-256 file, an offline check report and the resolved
 build dependency versions. These are build artifacts and are excluded from Git.
 An offline build check does not verify real-account login, MFA or provider-side

@@ -27,7 +27,7 @@ foreach ($directory in @("src", "tests", "packaging")) {
             Copy-Item -LiteralPath $_.FullName -Destination $destination
         }
 }
-foreach ($name in @("pyproject.toml", "README.md", "requirements-dev.lock", "requirements-garmin.lock", "requirements-windows-build.lock")) {
+foreach ($name in @("pyproject.toml", "README.md", "LICENSE", "requirements-dev.lock", "requirements-garmin.lock", "requirements-windows-build.lock")) {
     Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $snapshot
 }
 
@@ -70,6 +70,7 @@ try {
     $output = Join-Path $repo "dist"
     New-Item -ItemType Directory -Path $output -Force | Out-Null
     Copy-Item -LiteralPath $exe -Destination $output -Force
+    Copy-Item -LiteralPath (Join-Path $snapshot "LICENSE") -Destination (Join-Path $output "LICENSE.txt") -Force
     Copy-Item -LiteralPath $report -Destination (Join-Path $output "windows-smoke-report.json") -Force
     $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $output "MyWhooshGarminSync.exe.sha256") -Value ($hash + "  MyWhooshGarminSync.exe") -Encoding ASCII

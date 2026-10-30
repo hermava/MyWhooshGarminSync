@@ -126,3 +126,7 @@ pass. Next: user-run validation of real sign-in, remembered sessions and sync.
 ```
 
 Tests use synthetic data and block real network requests.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Third-party components retain their own licenses.
