@@ -1,0 +1,17 @@
+# Tested development environment: Python 3.12 / Linux.
+# Runtime, build and test dependencies; install project separately with --no-deps.
+anyio==4.15.1
+certifi==2026.10.23
+fitdecode==0.11.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0
+pytest==8.4.2
+setuptools==80.9.0
+typing_extensions==4.16.0
+wheel==0.45.1

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mywhoosh-garmin-sync"
+version = "0.1.0"
+description = "Local MyWhoosh activity reader and FIT validator"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["httpx==0.28.1", "fitdecode==0.11.0"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+garmin = ["garminconnect==0.3.20", "curl_cffi==0.16.3"]
+
+[project.scripts]
+mywhoosh-sync = "mywhoosh_garmin_sync.main:main"
+
+[project.gui-scripts]
+mywhoosh-sync-gui = "mywhoosh_garmin_sync.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

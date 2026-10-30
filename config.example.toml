@@ -1,0 +1,5 @@
+# Copy to config.local.toml and enter your own device's Unit ID.
+# Currently supported device profile: edge530.
+[device]
+profile = "edge530"
+unit_id = 123456789

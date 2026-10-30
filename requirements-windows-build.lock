@@ -1,0 +1,9 @@
+# Windows build environment; project runtime dependencies remain shared.
+-r requirements-garmin.lock
+pyinstaller==6.22.3
+altgraph==0.17.5
+colorama==0.4.6
+pefile==2024.8.26
+pyinstaller-hooks-contrib==2026.9
+pywin32-ctypes==0.2.3
+tzdata==2026.5
