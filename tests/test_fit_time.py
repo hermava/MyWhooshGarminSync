@@ -11,30 +11,36 @@ from mywhoosh_garmin_sync.fit_processing import validate_fit
 from fit_factory import FIT_EPOCH, START, make_time_fit, wrap
 
 
-@pytest.mark.parametrize("clock,expected", [
-    ("2024-01-15T18:30:00", "2024-01-15T17:30:00Z"),
-    ("2024-07-15T18:30:00", "2024-07-15T16:30:00Z"),
-    ("2024-03-31T02:30:00", None),
-    ("2024-10-27T02:30:00", None),
+@pytest.mark.parametrize("clock", [
+    "2024-01-15T18:30:00", "2024-07-15T18:30:00",
+    "2024-03-31T02:30:00", "2024-10-27T02:30:00",
 ])
-def test_automatic_local_policy_uses_date_offset_and_refuses_ambiguous_clocks(clock, expected):
+def test_automatic_repair_matches_previous_metadata_repair_without_shifting_recording(clock):
     raw = int((datetime.fromisoformat(clock).replace(tzinfo=FIT_EPOCH.tzinfo) - FIT_EPOCH).total_seconds())
     source = make_time_fit(start=raw)
     output, report = fit_time.prepare_automatic_time_repair(source, timezone_name="Europe/Berlin")
-    if expected:
-        assert report.status == "ready" and report.start_utc == expected
-        assert report.accepted_proposal is None and report.reason_code == "automatic_local"
-        assert validate_fit(output).valid
-    else:
-        assert report.status == "needs_review" and output == source and not report.changes
+    previous, _ = fit_time.prepare_time_repair(source, timezone_name="Europe/Berlin")
+    assert report.status == "ready" and output == previous
+    assert report.interpretation == "utc" and report.shifted_fields == 0
+    assert report.accepted_proposal is None
+    before, after = validate_fit(source), validate_fit(output)
+    assert before.session_times == after.session_times
+    assert before.first_record_utc == after.first_record_utc
+    assert before.last_record_utc == after.last_record_utc
 
 
 def test_automatic_adjustment_uses_recording_duration_when_faulty_local_finish_drifts():
     source = make_time_fit(local=START + 120 + fit_time.UNIX_FIT_OFFSET)
     output, report = fit_time.prepare_automatic_time_repair(source, timezone_name="Europe/Berlin")
     assert output != source and report.status == "ready"
-    assert report.start_utc == "2023-12-31T23:00:00Z"
-    assert report.changes[-1].after == "2024-01-01T00:01:00"
+    assert report.interpretation == "utc" and report.shifted_fields == 0
+    assert report.changes[-1].after == "2024-01-01T01:01:00"
+    before, after = validate_fit(source), validate_fit(output)
+    assert before.session_times == after.session_times
+    assert before.first_record_utc == after.first_record_utc
+    for old, new in zip(frames(source), frames(output), strict=True):
+        if old.frame_type != fitdecode.FIT_FRAME_DATA or old.name != "activity":
+            assert old.chunk.bytes == new.chunk.bytes
 
 
 def frames(data):

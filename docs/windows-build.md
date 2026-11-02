@@ -18,10 +18,11 @@ launches the packaged EXE for an offline check of Tk, the Garmin backend, native
 libraries, timezone data, time correction, private storage, process locking and SQLite. Credential Manager tests
 use a unique synthetic namespace and remove their own records afterwards.
 No real account sign-in or upload is performed by the build.
-Native GUI checks exercise automatic local-clock conversion, the time checkbox,
-device selection across restart without a preview, and a confirmed re-upload after
-simulated deletion. The frozen EXE check verifies the simplified window, automatic
-time conversion, bundled timezone database and synthetic saved preferences.
+Native GUI checks exercise automatic finish-metadata repair, the time checkbox,
+device selection across restart without a preview, a confirmed re-upload after
+simulated deletion, and a manually reviewed HTTP-520 retry with changed settings. The frozen EXE check verifies the simplified window, automatic
+finish repair without shifting recording timestamps, the bundled timezone database
+and synthetic saved preferences.
 
 ## Try the app
 

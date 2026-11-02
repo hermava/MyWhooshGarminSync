@@ -18,6 +18,7 @@ def run(report_path):
         from .garmin import _create_backend
         from .gui import AccountWindow
         from .fit_time import prepare_automatic_time_repair
+        from .fit_processing import validate_fit
         from .sync import SyncEngine, SyncSettings, load_settings
         from .sync_state import SyncState
         from .windows_credentials import _NativeCredentials
@@ -48,7 +49,7 @@ def run(report_path):
             "hAUEhscDDQOAtPQ/YOoAAAEAuwCSZRI0VnP2")
         corrected, repair = prepare_automatic_time_repair(synthetic, timezone_name="Europe/Berlin")
         assert repair.status == "ready" and corrected != synthetic
-        assert repair.changes[-1].after == "2024-01-01T00:01:00"
+        assert repair.changes[-1].after == "2024-01-01T01:01:00"
         result["checks"].append("packaged_time_repair_and_timezone_data")
         root = tk.Tk()
         root.withdraw()
@@ -59,18 +60,19 @@ def run(report_path):
         assert window.sync_tab is not None
         assert window.sync_tab.settings().timezone == "Europe/Berlin"
         assert window.sync_tab.settings().profile == "edge530"
-        assert window.sync_tab.retry_button.cget("text") == "Retry deleted"
+        assert window.sync_tab.retry_button.cget("text") == "Retry upload"
         result["checks"].append("packaged_tk_and_sync_window")
         root.deiconify()
         root.update()
-        assert repair.start_utc == "2023-12-31T23:00:00Z" and repair.shifted_fields > 2
+        assert repair.interpretation == "utc" and repair.shifted_fields == 0
+        assert validate_fit(corrected).session_times == validate_fit(synthetic).session_times
         assert window.sync_tab.adjust_times.get() is True
         assert not hasattr(window.sync_tab, "verify_button")
         assert not hasattr(window.sync_tab, "time_button")
         window.sync_tab.adjust_checkbox.invoke()
         assert window.sync_tab.settings().adjust_times is False
         result["checks"].append("packaged_automatic_time_checkbox")
-        result["checks"].append("packaged_local_recording_to_utc")
+        result["checks"].append("packaged_finish_repair_preserves_recording_timeline")
         result["versions"] = {name: version(name) for name in ("mywhoosh-garmin-sync", "garminconnect", "curl_cffi")}
         result["status"] = "passed"
     except Exception as error:

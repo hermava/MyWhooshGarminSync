@@ -179,6 +179,29 @@ def test_deleted_retry_requires_confirmation_and_never_calls_upload(monkeypatch)
     assert ui.plan is None and not ui.selected
 
 
+def test_uncertain_retry_requires_manual_confirmation_and_selects_only_reviewed_ride(monkeypatch):
+    from tkinter import messagebox
+    ui = tab()
+    preview = plan()
+    ui.handle(DesktopEvent("done", "sync", "preview", preview))
+    ui.tree.picked = (next(row for row, source in ui.row_ids.items() if source == "review"),)
+    calls, prompts = [], []
+    ui.controller.retry_uncertain = lambda *args, **kwargs: calls.append((args, kwargs)) or True
+    monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
+    ui.retry_deleted()
+    assert not calls
+    monkeypatch.setattr(messagebox, "askyesno", lambda title, body, **kwargs: prompts.append(body) or True)
+    ui.retry_deleted()
+    assert calls == [((preview.identity, "review"), {"confirmed_missing": True})]
+    assert "may still have reached Garmin" in prompts[0] and "100 recent" in prompts[0]
+    assert "current settings" in prompts[0] and "Nothing is uploaded" in prompts[0]
+    assert ui.plan is None
+    revised = replace(preview, items=(*preview.items[:3], replace(preview.items[3], status="ready")))
+    ui.handle(DesktopEvent("done", "sync", "retry_uncertain", revised))
+    assert ui.selected == {"review"}  # A newer ready ride must not replace the reviewed selection.
+    assert "nothing uploaded" in ui.message.get()
+
+
 def test_timezone_is_explicit_and_changing_it_requires_a_new_preview():
     ui = tab()
     assert ui.settings().timezone is None

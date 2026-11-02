@@ -87,6 +87,8 @@ class Accounts:
             identity = str(100 + len(self.posts))
             self.remote.append(GarminActivity(identity, "Synthetic Garmin Ride", timing.start_utc,
                                               timing.timer_seconds, timing.elapsed_seconds))
+            if self.mode == "http-520-after-write":
+                return httpx.Response(520)
             if self.mode == "timeout-after-write":
                 raise httpx.ReadTimeout("synthetic-private-error")
             if self.mode == "unknown-import":

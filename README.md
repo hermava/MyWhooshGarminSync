@@ -17,7 +17,7 @@ Windows folder and double-click it; Python is included. See the
 
 - Use the [desktop app](docs/desktop.md) to connect accounts and sync selected rides (requires Tk).
 - Preview a bounded date range, select rides and confirm the upload to Garmin.
-- Automatically correct known MyWhoosh time errors, with changes shown before upload.
+- Automatically repair known MyWhoosh finish-time errors, with changes shown before upload.
 - List MyWhoosh rides, download FIT files and validate them without changing originals.
 - Compare a FIT file with recent Garmin activities and explicitly confirm a single upload.
 - Optionally create a separate FIT copy using an experimental Edge 530 device profile.
@@ -26,16 +26,16 @@ Real-account tests confirmed download and import. Training Effect appeared after
 an Edge 530 profile import in one manual test; training load and overall training
 status are not guaranteed. The app uses unofficial provider interfaces.
 
-**Why time correction is needed:** In an inspected MyWhoosh export, timestamps
-matched the rider's local clock even though FIT defines those fields as UTC.
-Interpreting them as UTC shifts the displayed ride times. Corrections must use
-the selected timezone and the workout date's daylight saving rules, while
-preserving the original FIT file.
+**Why time correction is needed:** Some MyWhoosh exports contain incorrectly
+encoded finish metadata, including a Unix/FIT epoch mix-up that produces dates in
+2046. The app repairs supported Activity finish fields using the recorded duration
+and your selected timezone, while preserving the original file.
 
-**Adjust times automatically** is enabled by default. Choose your workout timezone
-once; the app converts affected MyWhoosh recordings to UTC and repairs their finish
-times. **Sync selected** shows the changes before upload. Uncheck the option to
-keep original times. Measurements and durations are preserved. See the [sync guide](docs/sync.md).
+**Adjust times automatically** starts enabled. The recording start, measurement
+and session timestamps stay unchanged. Earlier builds automatically shifted the
+entire recording as if all clocks were local time; that assumption has been removed.
+**Sync selected** shows the actual changes. Uncheck the option to keep all original
+time fields. See the [sync guide](docs/sync.md).
 
 ## Using the Windows app
 
@@ -51,13 +51,16 @@ keep original times. Measurements and durations are preserved. See the [sync gui
    Use your own device's numeric ID. To preserve the original device information,
    select **Keep original device** instead.
 4. **Choose your timezone.** Select where you trained, for example `Europe/Berlin`.
-   Leave **Adjust times automatically** checked to correct affected MyWhoosh times.
+   Leave **Adjust times automatically** checked to repair affected finish metadata.
    Adjust **Past days** and **Max rides** if needed.
 5. **Preview your rides.** Click **Preview sync**. Nothing is uploaded yet.
    The newest ready ride is checked automatically; use the **SYNC** column to
    select other rides, or **Select ready** to select all ready rides.
 6. **Sync.** Click **Sync selected**, review any time corrections and confirm.
    Wait for confirmation that the selected rides were imported into Garmin Connect.
+
+If an upload is unconfirmed, check Garmin Connect in your browser first.
+Then use **Retry upload** to review one new attempt; see the [recovery guide](docs/sync.md#uncertain-results-and-recovery).
 
 Device settings are remembered. After your next workout, open the app, preview
 and sync. Automatic time adjustment starts enabled on every launch. When replacing
@@ -103,7 +106,7 @@ See the [CLI guide](docs/cli.md) for download, device configuration and upload c
 - Passwords are not saved. Standard interactive commands keep sessions in memory;
   optional Windows session storage is available through the new account commands.
 - Original FIT files are preserved. Uncertain uploads are recorded and block
-  resending through durable source-ID tracking and file upload records.
+  automatic resending through durable source-ID tracking and file upload records.
 - Personal configuration, FIT files and upload journals are excluded from Git.
   FIT files and upload journals are not encrypted; Git exclusions do not prevent access
   by other programs running as you or inclusion in backups.

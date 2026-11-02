@@ -89,7 +89,7 @@ class SyncTab:
         self.preview_button.pack(side="left", padx=(0, 8))
         self.all_button = ttk.Button(actions, text="Select ready", command=self.select_all)
         self.all_button.pack(side="left", padx=(0, 8))
-        self.retry_button = ttk.Button(actions, text="Retry deleted", command=self.retry_deleted)
+        self.retry_button = ttk.Button(actions, text="Retry upload", command=self.retry_deleted)
         self.retry_button.pack(side="left", padx=(0, 8))
         self.cancel_button = ttk.Button(actions, text="Stop", command=controller.cancel)
         self.cancel_button.pack(side="right", padx=(8, 0))
@@ -174,7 +174,8 @@ class SyncTab:
             widget.state(["disabled"] if busy else ["!disabled"])
         self.all_button.state(["!disabled"] if not busy and self.plan and any(i.status == "ready" for i in self.items.values()) else ["disabled"])
         self.upload_button.state(["!disabled"] if not busy and self.plan and self.selected else ["disabled"])
-        self.retry_button.state(["!disabled"] if not busy and self.plan and any(i.status == "uploaded" and i.garmin_id for i in self.items.values()) else ["disabled"])
+        self.retry_button.state(["!disabled"] if not busy and self.plan and any(
+            (i.status == "uploaded" and i.garmin_id) or i.status == "needs_review" for i in self.items.values()) else ["disabled"])
         self.cancel_button.state(["!disabled"] if busy else ["disabled"])
 
     def preview(self):
@@ -245,27 +246,36 @@ class SyncTab:
             return
         rows = self.tree.selection()
         if not rows:
-            self.message.set("Highlight the confirmed upload you deleted from Garmin first.")
+            self.message.set("Highlight the unconfirmed or deleted upload you want to retry first.")
             return
         item = self.items[self.row_ids[rows[0]]]
-        if item.status != "uploaded" or not item.garmin_id:
-            self.message.set("Only confirmed app uploads with a known Garmin ID can be reopened here. Unclear upload records stay blocked.")
+        uncertain = item.status == "needs_review"
+        if not uncertain and (item.status != "uploaded" or not item.garmin_id):
+            self.message.set("Select an unconfirmed upload or a confirmed upload you deleted from Garmin.")
             return
         from tkinter import messagebox
-        if not messagebox.askyesno("Check deleted Garmin activity",
-                                  f"Did you delete this activity from Garmin Connect?\n\n{self.display(item.title)}\nGarmin ID: {item.garmin_id}\n\n"
-                                  "The app will check deletion and prepare a new preview. Existing history is kept. Nothing is uploaded yet.",
+        prompt = (f"Have you checked Garmin Connect in your browser and confirmed this ride is missing?\n\n{self.display(item.title)}\n\n"
+                  "An unconfirmed upload may still have reached Garmin. The app will check known IDs and up to 100 recent activities, "
+                  "but cannot rule out every duplicate.\n\nConfirm to prepare one retry using the current settings. "
+                  "Existing records are kept. Nothing is uploaded until you confirm Sync selected."
+                  if uncertain else
+                  f"Did you delete this activity from Garmin Connect?\n\n{self.display(item.title)}\nGarmin ID: {item.garmin_id}\n\n"
+                  "The app will check deletion and prepare a new preview. Existing history is kept. Nothing is uploaded yet.")
+        if not messagebox.askyesno("Review unconfirmed upload" if uncertain else "Check deleted Garmin activity", prompt,
                                   parent=self.tree.winfo_toplevel()):
             return
-        if self.controller.retry_deleted(self.plan.identity, item.source_id):
+        started = (self.controller.retry_uncertain(self.plan.identity, item.source_id, confirmed_missing=True)
+                   if uncertain else self.controller.retry_deleted(self.plan.identity, item.source_id))
+        if started:
+            self._retry_source = item.source_id
             self.plan = None
             self.selected.clear()
-            self.message.set("Checking that the confirmed activity was deleted from Garmin…")
+            self.message.set("Checking Garmin and preparing a new preview. Nothing is uploaded yet…")
 
     def handle(self, event):
         if event.kind == "progress":
             self.message.set(event.value[1])
-        elif event.kind == "done" and event.action in ("preview", "retry_deleted"):
+        elif event.kind == "done" and event.action in ("preview", "retry_deleted", "retry_uncertain"):
             self.plan = event.value
             self.summary.set(f"Past {self.plan.settings.days} days · Up to {self.plan.settings.limit} rides · "
                              + ("Edge 530 (experimental)" if self.plan.settings.profile else "Original device")
@@ -280,13 +290,16 @@ class SyncTab:
             for index, item in enumerate(self.plan.items):
                 row = self.tree.insert("", "end", values=("", "", "", ""))
                 self.row_ids[row] = item.source_id
-                if item.status == "ready" and not self.selected:
+                retry_action = event.action in ("retry_deleted", "retry_uncertain")
+                if item.status == "ready" and not self.selected and (not retry_action or item.source_id == getattr(self, "_retry_source", None)):
                     self.selected.add(item.source_id)  # First run defaults to the newest ready ride only.
+            self._retry_source = None
             self._render_rows()
             ready = sum(item.status == "ready" for item in self.items.values())
             corrected = sum(item.time_status in ("corrected", "approved") for item in self.items.values())
             time_review = sum(item.time_status in ("needs_review", "needs_timezone") for item in self.items.values())
             self.message.set(("Deletion confirmed. New preview prepared; nothing uploaded. " if event.action == "retry_deleted" else "")
+                             + ("Missing activity reviewed. New preview prepared; nothing uploaded. " if event.action == "retry_uncertain" else "")
                              + f"{ready} ready of {len(self.items)} rides. Only checked rides will be sent. "
                              + (f"{corrected} time corrected. " if corrected else "")
                              + (f"{time_review} could not adjust time; check the timezone. " if time_review else "")
@@ -310,7 +323,7 @@ class SyncTab:
         elif event.kind == "error":
             self.plan = None
             self.message.set((event.value or "Deletion could not be confirmed. Existing upload records were kept.")
-                             if event.action == "retry_deleted" else
+                             if event.action in ("retry_deleted", "retry_uncertain") else
                              "Sync could not continue. Check your accounts, connection and device settings, then preview again.")
         elif event.kind == "cancelled":
             self.plan = None

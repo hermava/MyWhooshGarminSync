@@ -83,14 +83,19 @@ class SyncState:
                             + " WHERE scope=? AND source_id=?", (status, *values.values(), scope, source_id))
         return self.get(scope, source_id)
 
-    def attempted(self, target, file_hash, *, scope=None, source_id=None, deleted_ids=()):
+    def owned_attempts(self, scope, source_id):
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM attempts WHERE scope=? AND source_id=? ORDER BY target_account,file_hash", (scope, source_id))]
+
+    def attempted(self, target, file_hash, *, scope=None, source_id=None, deleted_ids=(), reviewed=()):
         rows = self.db.execute("SELECT * FROM attempts WHERE (target_account=? OR target_account LIKE ?) AND file_hash=?",
                                (target, target + ":%", file_hash))
-        return any(not (row["scope"] == scope and row["source_id"] == source_id and row["status"] == "uploaded"
-                        and row["garmin_id"] in deleted_ids) for row in rows)
+        return any(not (row["scope"] == scope and row["source_id"] == source_id
+                        and (dict(row) in reviewed or (row["status"] == "uploaded" and row["garmin_id"] in deleted_ids)))
+                   for row in rows)
 
     def reviews(self, scope, exclude):
-        rows = self.db.execute("SELECT * FROM rides WHERE scope=? AND status IN ('upload_pending','needs_review','possible_duplicate') ORDER BY start_utc DESC", (scope,))
+        rows = self.db.execute("SELECT * FROM rides WHERE scope=? AND (status IN ('upload_pending','needs_review','possible_duplicate','retry_allowed') OR (status='ready' AND retry_authorization!='')) ORDER BY start_utc DESC", (scope,))
         result = []
         for row in rows:
             if row["source_id"] not in exclude:

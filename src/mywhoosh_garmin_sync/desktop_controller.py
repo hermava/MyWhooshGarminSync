@@ -57,6 +57,10 @@ def _error_message(error: Exception) -> str:
             return "A matching activity is still listed in Garmin. Wait for deletion to finish and check again."
         if error.code == "retry_uncertain":
             return "An unclear or unrelated upload record still exists. It was kept and the ride was not reopened."
+        if error.code == "retry_confirmation":
+            return "Check Garmin Connect and explicitly confirm that the activity is missing before retrying."
+        if error.code == "retry_expired":
+            return "The retry review expired. Preview and confirm the missing activity again."
         if error.code in ("garmin_dependency_missing", "garmin_dependency_version"):
             return "Garmin support is missing or incompatible. Please use a complete app build."
         return "Could not access saved sign-in data. Try signing out, or sign in without staying signed in."
@@ -182,4 +186,9 @@ class DesktopController:
         return self._start("sync", "retry_deleted", lambda: self.sync_engine.authorize_retry(
             identity, source_id, cancel=self._cancel_requested.is_set,
             progress=lambda source_id, stage: self._emit(DesktopEvent("progress", "sync", "retry_deleted", (source_id, stage)))))
+
+    def retry_uncertain(self, identity, source_id, *, confirmed_missing):
+        return self._start("sync", "retry_uncertain", lambda: self.sync_engine.authorize_uncertain_retry(
+            identity, source_id, confirmed_missing=confirmed_missing, cancel=self._cancel_requested.is_set,
+            progress=lambda source_id, stage: self._emit(DesktopEvent("progress", "sync", "retry_uncertain", (source_id, stage)))))
 

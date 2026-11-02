@@ -70,8 +70,8 @@ is not necessary. WSL also requires a graphical desktop connection such as WSLg.
    including when closing without a preview, and restored on the next start.
    Incomplete edits keep the last valid settings. **Adjust times automatically**
    starts checked on every launch and appears beside the timezone in the settings area. For affected
-   MyWhoosh recordings, it converts local clocks to UTC using your workout timezone
-   and fixes finish metadata. Uncheck it to send original times unchanged.
+   MyWhoosh recordings, it repairs Activity finish metadata using your selected
+   timezone and recorded duration. Recording start, samples and session times stay unchanged. Uncheck it to send original times unchanged.
    The TIME column shows the result. Select a ride for details; no separate time
    review or Garmin-ID verification is needed. Unresolvable times remain blocked
    while other ready rides are selectable.
@@ -80,9 +80,11 @@ is not necessary. WSL also requires a graphical desktop connection such as WSLg.
    with the selected rides, profile and any time corrections before anything is uploaded.
 7. The upload confirmation shows the actual old/new times for selected rides.
    Check uncertain upload results directly in Garmin Connect. If you manually
-   deleted a confirmed upload, preview again, highlight that ride and choose
-   **Retry deleted**. Deletion is checked before preparing a new preview; a new
-   upload still requires confirmation. Existing history is kept.
+   deleted a confirmed upload, or an unconfirmed upload is missing, first change
+   settings if needed and preview again. Highlight that ride and choose **Retry upload**.
+   Confirm deletion or that you checked Garmin Connect in your browser and found
+   no activity. The app checks again and prepares a new preview; a new upload still
+   requires **Sync selected** confirmation. Existing history is kept.
 8. **Sign out** forgets that provider's session locally. It does not revoke a token
    at the provider or remove the separate legacy MyWhoosh POSIX session file.
 

@@ -303,24 +303,33 @@ def prepare_time_repair(data: bytes, *, timezone_name: str | None,
 
 
 def prepare_automatic_time_repair(data: bytes, *, timezone_name: str | None):
-    """Apply the selected MyWhoosh local-clock policy only to a verified proposal.
+    """Repair finish metadata without guessing whether recorded clocks are local.
 
-    Use session start plus elapsed duration as the finish anchor. Already correct
-    files stay unchanged; unsupported or ambiguous timelines are never guessed.
+    Preserve every recording timestamp. Complete local-to-UTC conversion remains
+    an explicit low-level operation; a selected timezone alone cannot establish
+    the interpretation of the original measurement timeline.
     """
     output, report = prepare_time_repair(data, timezone_name=timezone_name)
+    if report.status == "ready":
+        return output, report  # Exact output of the previously supported repair.
     if report.status in ("unchanged", "not_applicable", "needs_timezone"):
         return output, report
-    if report.reason_code not in ("confirmed_epoch_error", "missing_stop", "unconfirmed_epoch"):
-        return data, replace(report, status="needs_review", output_sha256=report.source_sha256, changes=())
+    if report.reason_code not in ("missing_stop", "unconfirmed_epoch"):
+        return data, report
     if timezone_name is None:
         return data, replace(report, status="needs_timezone", output_sha256=report.source_sha256, changes=())
     original = validate_fit(data)
     finish = original.session_times[0].elapsed_end_utc if original.sessions == 1 else None
-    finish_clock = _clock(math.ceil((datetime.fromisoformat(finish) - FIT_EPOCH).total_seconds())) if finish else None
-    candidates = [p for p in report.proposals if p.interpretation == "local" and p.finish_local == finish_clock]
+    finish_utc = _clock(math.ceil((datetime.fromisoformat(finish) - FIT_EPOCH).total_seconds())) + "Z" if finish else None
+    candidates = [p for p in report.proposals if p.interpretation == "utc" and p.finish_utc == finish_utc]
     if len(candidates) != 1 or original.session_times[0].timer_seconds is None:
         return data, replace(report, status="needs_review", output_sha256=report.source_sha256, changes=(),
-                             reason="No unambiguous local-clock conversion is available.")
-    output, converted = prepare_time_repair(data, timezone_name=timezone_name, proposal_id=candidates[0].id)
-    return output, replace(converted, reason_code="automatic_local", accepted_proposal=None)
+                             reason="No unambiguous finish-metadata repair is available.")
+    output, repaired = prepare_time_repair(data, timezone_name=timezone_name, proposal_id=candidates[0].id)
+    return output, replace(repaired, reason_code="automatic_finish_metadata", accepted_proposal=None)
+
+
+def previous_local_variants(data, report, *, timezone_name):
+    """Reconstruct prior full-timeline variants only for duplicate/audit guards."""
+    return tuple(prepare_time_repair(data, timezone_name=timezone_name, proposal_id=p.id)[0]
+                 for p in report.proposals if p.interpretation == "local")

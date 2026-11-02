@@ -12,9 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .errors import AuthError, FitError, NetworkError, RateLimitError, SessionError, SyncCancelled, SyncError
 from .fit_identity import prepare_edge530
 from .fit_processing import MAX_FIT_BYTES, validate_fit
-from .fit_time import TimeRepairReport, prepare_time_repair, prepare_automatic_time_repair
+from .fit_time import TimeRepairReport, prepare_time_repair, prepare_automatic_time_repair, previous_local_variants
 from .garmin import UploadResult, match_fit
 from .sync_state import SyncState
+from .sync_retry import capture_review, comparison_reports, load_review, review_expired
 from .workspace import Workspace
 
 
@@ -84,12 +85,15 @@ def _retry_authorization(row, target, source_hash, *, active=True):
         return None
     try:
         retry = json.loads(raw)
-        if (not isinstance(retry, dict) or set(retry) != {"nonce", "source_sha256", "target_account", "deleted_ids", "used", "verified_at_utc"}
+        required = {"nonce", "source_sha256", "target_account", "deleted_ids", "used", "verified_at_utc"}
+        if (not isinstance(retry, dict) or not required <= set(retry) or set(retry) - required - {"review_hash"}
                 or not isinstance(retry["nonce"], str) or len(retry["nonce"]) != 32
                 or any(c not in "0123456789abcdef" for c in retry["nonce"])
                 or retry["source_sha256"] != source_hash or retry["target_account"] != target
                 or type(retry["used"]) is not bool or not isinstance(retry["verified_at_utc"], str)
-                or not isinstance(retry["deleted_ids"], list) or not 1 <= len(retry["deleted_ids"]) <= 10
+                or ("review_hash" in retry and (not isinstance(retry["review_hash"], str) or len(retry["review_hash"]) != 64
+                                               or any(c not in "0123456789abcdef" for c in retry["review_hash"])))
+                or not isinstance(retry["deleted_ids"], list) or not (0 if "review_hash" in retry else 1) <= len(retry["deleted_ids"]) <= 10
                 or any(not isinstance(i, str) or not i.isascii() or not i.isdecimal() or len(i) > 64 or int(i) <= 0 for i in retry["deleted_ids"])):
             raise ValueError
     except (ValueError, TypeError, RecursionError):
@@ -143,12 +147,17 @@ class SyncEngine:
         if cancel():
             raise SyncCancelled()
 
-    def _legacy_exists(self, hashes, *, deleted_ids=()):
+    def _legacy_exists(self, hashes, *, deleted_ids=(), review=None):
+        if review is not None:
+            for name, digest in review["journals"].items():
+                data = self.journal.read(name, maximum=8192)
+                if data is None or hashlib.sha256(data).hexdigest() != digest:
+                    return True
         for value in hashes:
             if not value:
                 continue
             paths = [self.journal.path(value + ".json")]
-            if deleted_ids:
+            if deleted_ids or review is not None:
                 extras = list(self.journal.root.glob(value + ".retry-*.json"))
                 if len(extras) > 32:
                     return True
@@ -156,10 +165,15 @@ class SyncEngine:
             for path in paths:
                 if not path.exists() and not path.is_symlink():
                     continue
-                if not deleted_ids:
+                if not deleted_ids and review is None:
                     return True
                 try:
-                    marker = json.loads(self.journal.read(path.name, maximum=8192))
+                    data = self.journal.read(path.name, maximum=8192)
+                    if review is not None and path.name in review["journals"]:
+                        if data is None or hashlib.sha256(data).hexdigest() != review["journals"][path.name]:
+                            return True
+                        continue
+                    marker = json.loads(data)
                 except (ValueError, TypeError, SessionError):
                     return True
                 if (not isinstance(marker, dict) or marker.get("status") != "uploaded"
@@ -185,6 +199,10 @@ class SyncEngine:
             raise FitError("The cached original has changed. Keep it for review.")
         retry = _retry_authorization(previous, target, original_hash)
         deleted_ids = tuple(retry["deleted_ids"]) if retry else ()
+        review = load_review(self.workspace, retry, scope, activity.id)
+        if review_expired(review, retry, self.clock()):
+            return _item(activity, state.update(scope, activity.id, "needs_review", reason="retry_expired"))
+        prior_reports = comparison_reports(self.workspace, review)
         state.update(scope, activity.id, "downloaded", original_name=original_name, original_hash=original_hash,
                      start_utc=activity.start_time.isoformat() if activity.start_time else None)
         report = validate_fit(data, expected_start=activity.start_time)
@@ -212,6 +230,8 @@ class SyncEngine:
             changes = "; ".join(f"{ {'activity.timestamp': 'UTC finish', 'session.start_time': 'UTC start'}.get(c.field, 'Local finish')}: {c.before} → {c.after}"
                                 for c in time_report.changes)
             time_detail = f"Time {'approved by you' if time_status == 'approved' else 'corrected'} using {settings.timezone}. {changes}"
+            if time_report.interpretation == "utc":
+                time_detail += "; Recording start and measurement timestamps unchanged"
             if time_report.interpretation == "local":
                 time_detail = (f"Entire recording converted from {settings.timezone} local time to UTC. "
                                f"Start: {time_report.start_utc}; {changes}")
@@ -236,6 +256,11 @@ class SyncEngine:
             if settings.profile:
                 old_device_copy, _ = prepare_edge530(old_time_copy, unit_id=settings.unit_id)
                 hashes.add(hashlib.sha256(old_device_copy).hexdigest())
+            for prior in previous_local_variants(original_data, time_report, timezone_name=settings.timezone):
+                hashes.add(hashlib.sha256(prior).hexdigest())
+                prior_reports += (validate_fit(prior),)
+                if settings.profile:
+                    hashes.add(hashlib.sha256(prepare_edge530(prior, unit_id=settings.unit_id)[0]).hexdigest())
         if settings.profile:
             progress(activity.id, "Preparing Garmin device copy")
             data, _ = prepare_edge530(data, unit_id=settings.unit_id)
@@ -255,14 +280,19 @@ class SyncEngine:
             raise FitError("The prepared FIT copy has changed. Keep it for review.")
         fields = dict(target_name=target_name, target_hash=target_hash, reason="", garmin_id=None,
                       start_utc=report.session_times[0].start_utc)
-        if self._legacy_exists(hashes, deleted_ids=deleted_ids) or any(
-                state.attempted(target, value, scope=scope, source_id=activity.id, deleted_ids=deleted_ids) for value in hashes):
+        if self._legacy_exists(hashes, deleted_ids=deleted_ids, review=review) or any(
+                state.attempted(target, value, scope=scope, source_id=activity.id, deleted_ids=deleted_ids,
+                                reviewed=review["attempts"] if review else ()) for value in hashes):
             return _item(activity, state.update(scope, activity.id, "needs_review", **{**fields, "reason": "previous_attempt"}))
         check = match_fit(report, remote, window_limit=100)
         if time_report.interpretation == "local":
             original_check = match_fit(original_report, remote, window_limit=100)
             if original_check.status != "no_candidate_in_window":
                 check = original_check
+        for prior in prior_reports:
+            previous_check = match_fit(prior, remote, window_limit=100)
+            if previous_check.status != "no_candidate_in_window":
+                check = previous_check
         if check.status == "candidate_found":
             return _item(activity, state.update(scope, activity.id, "possible_duplicate",
                          **{**fields, "reason": "remote_candidate", "garmin_id": check.candidates[0].id}))
@@ -314,6 +344,24 @@ class SyncEngine:
                 # they disappear from MyWhoosh's bounded list or date window.
                 reviews = state.reviews(scope, {item.source_id for item in items})
                 for row in reviews[:20]:
+                    if row["status"] in ("retry_allowed", "ready"):
+                        # An explicitly reviewed retry remains usable even when the
+                        # source ride has aged out of the bounded provider listing.
+                        try:
+                            from .mywhoosh import Activity
+                            original = self.workspace.read(row["original_name"], maximum=MAX_FIT_BYTES)
+                            if original is None or hashlib.sha256(original).hexdigest() != row["original_hash"]:
+                                raise FitError("The preserved original is missing or changed.")
+                            report = validate_fit(original)
+                            if not report.valid or len(report.session_times) != 1:
+                                raise FitError("The preserved original is not a supported single-session FIT.")
+                            activity = Activity(row["source_id"], row["title"], datetime.fromisoformat(report.session_times[0].start_utc), None)
+                            items.append(self._prepare(activity, settings, scope, target, state, remote, cancel, progress))
+                            continue
+                        except (AuthError, NetworkError, RateLimitError, SyncCancelled):
+                            raise
+                        except SyncError:
+                            row = state.update(scope, row["source_id"], "needs_review", reason="preparation_failed")
                     items.append(SyncItem(row["source_id"], row["title"] or "Previous upload requiring review",
                                           row["start_utc"], "needs_review" if row["status"] == "upload_pending" else row["status"],
                                           row["reason"], row["garmin_id"], row["target_hash"],
@@ -360,6 +408,14 @@ class SyncEngine:
                     original_timing = validate_fit(original)
                     retry = _retry_authorization(row, target, row["original_hash"])
                     deleted_ids = tuple(retry["deleted_ids"]) if retry else ()
+                    review = load_review(self.workspace, retry, plan.scope, source_id)
+                    if review_expired(review, retry, self.clock()):
+                        raise SessionError("Manual retry confirmation expired. Preview and confirm absence again.", code="retry_expired")
+                    prior_reports = comparison_reports(self.workspace, review)
+                    if plan.settings.adjust_times:
+                        _, clock_report = prepare_time_repair(original, timezone_name=plan.settings.timezone)
+                        prior_reports += tuple(validate_fit(previous) for previous in previous_local_variants(
+                            original, clock_report, timezone_name=plan.settings.timezone))
                     attempt_target = target + ":" + retry["nonce"] if retry else target
                     started = False
                     markers = []
@@ -367,7 +423,11 @@ class SyncEngine:
                     def begin():
                         nonlocal started
                         self._cancel(cancel)
-                        if self._legacy_exists(hashes, deleted_ids=deleted_ids):
+                        if review and state.owned_attempts(plan.scope, source_id) != review["attempts"]:
+                            raise SessionError("Previous upload records changed. Review the ride again.", code="retry_uncertain")
+                        if self._legacy_exists(hashes, deleted_ids=deleted_ids, review=review) or any(
+                                state.attempted(target, value, scope=plan.scope, source_id=source_id, deleted_ids=deleted_ids,
+                                                reviewed=review["attempts"] if review else ()) for value in hashes):
                             raise SessionError("A previous upload was found. Check Garmin before retrying.")
                         state.begin_upload(plan.scope, source_id, target, item.target_hash,
                                            retry_nonce=retry["nonce"] if retry else None)
@@ -389,7 +449,7 @@ class SyncEngine:
                                 self._cancel(cancel)
                                 if not uploader.activity_missing(identity):
                                     raise SessionError("A previously deleted activity is present in Garmin. Preview again.")
-                            result = uploader.upload_once(data, before_send=begin, comparison_reports=(original_timing,))
+                            result = uploader.upload_once(data, before_send=begin, comparison_reports=(original_timing, *prior_reports))
                     except SyncCancelled:
                         if not started:
                             return SyncResult(tuple(results), stopped=True)
@@ -427,46 +487,89 @@ class SyncEngine:
             self._running.release()
 
     def authorize_retry(self, identity, source_id, *, cancel=lambda: False, progress=lambda *args: None):
-        """Reopen only a confirmed upload whose exact Garmin IDs now return 404."""
+        """Reopen a confirmed upload only after its exact Garmin IDs return 404."""
+        return self._authorize_retry(identity, source_id, uncertain=False, cancel=cancel, progress=progress)
+
+    def authorize_uncertain_retry(self, identity, source_id, *, confirmed_missing=False,
+                                  cancel=lambda: False, progress=lambda *args: None):
+        """Allow one new attempt after explicit manual absence confirmation and reads."""
+        if confirmed_missing is not True:
+            raise SessionError("Confirm that you checked Garmin Connect and the activity is missing.", code="retry_confirmation")
+        return self._authorize_retry(identity, source_id, uncertain=True, cancel=cancel, progress=progress)
+
+    def _authorize_retry(self, identity, source_id, *, uncertain, cancel, progress):
         if not self._running.acquire(blocking=False):
             raise SessionError("A sync operation is already running.")
         try:
             with self.workspace.locked(), SyncState(self.workspace) as state:
                 plan, target = self._checked_plan(identity)
                 row = state.get(plan.scope, source_id)
-                if (not any(i.source_id == source_id for i in plan.items) or not row
-                        or row["status"] != "uploaded" or not row["garmin_id"]):
-                    raise SessionError("Only a confirmed upload with a known Garmin ID can be reopened.")
+                eligible = bool(row and ((row["status"] in ("needs_review", "upload_pending")) if uncertain
+                                        else (row["status"] == "uploaded" and row["garmin_id"])))
+                if not any(i.source_id == source_id for i in plan.items) or not eligible:
+                    raise SessionError("Select an unconfirmed upload to review." if uncertain
+                                       else "Only a confirmed upload with a known Garmin ID can be reopened.")
                 original = self.workspace.read(row["original_name"], maximum=MAX_FIT_BYTES)
                 if original is None or hashlib.sha256(original).hexdigest() != row["original_hash"]:
                     raise FitError("The preserved original is missing or changed.")
                 old = _retry_authorization(row, target, row["original_hash"], active=False)
-                identities = list(dict.fromkeys([*(old["deleted_ids"] if old else []), row["garmin_id"]]))
+                previous_review = load_review(self.workspace, old, plan.scope, source_id)
+                attempts = state.owned_attempts(plan.scope, source_id)
+                if uncertain and not attempts:
+                    raise SessionError("No owned app upload attempt can be reviewed. Keep existing records.", code="retry_uncertain")
+                identities = list(dict.fromkeys([*(old["deleted_ids"] if old else []),
+                                                *(a["garmin_id"] for a in attempts if a["garmin_id"]),
+                                                *([row["garmin_id"]] if row["garmin_id"] else [])]))
                 if len(identities) > 10:
                     raise SessionError("This ride has too many previous retries for automatic reopening.")
-                progress(source_id, "Checking that the previous Garmin activity was deleted")
-                self.accounts.garmin_activities(limit=100)  # Refresh first, no credential retry on writes.
-                with self.accounts.garmin_connection() as reader:
-                    for activity_id in identities:
-                        self._cancel(cancel)
-                        if not reader.activity_missing(activity_id):
-                            raise SessionError("The previous activity is still present in Garmin.", code="retry_present")
-                    remote = reader.activities(limit=100)
+                review = None
                 reports = [validate_fit(original)]
                 if row["target_name"]:
                     prepared = self.workspace.read(row["target_name"], maximum=MAX_FIT_BYTES)
                     if prepared is None or hashlib.sha256(prepared).hexdigest() != row["target_hash"]:
                         raise FitError("The previous prepared file is missing or changed.")
                     reports.append(validate_fit(prepared))
+                if uncertain or previous_review is not None:
+                    # Compute the current variants so their legacy hash records can be
+                    # reviewed without bypassing unrelated records in the same journal.
+                    variants = [original]
+                    if plan.settings.adjust_times:
+                        current, time_report = prepare_automatic_time_repair(original, timezone_name=plan.settings.timezone)
+                        variants.extend((current, prepare_time_repair(original, timezone_name=plan.settings.timezone)[0],
+                                         *previous_local_variants(original, time_report, timezone_name=plan.settings.timezone)))
+                    if plan.settings.profile:
+                        variants.extend(prepare_edge530(data, unit_id=plan.settings.unit_id)[0] for data in tuple(variants))
+                    hashes = {hashlib.sha256(data).hexdigest() for data in variants}
+                    review = capture_review(self.workspace, self.journal, row, attempts, hashes, target=target,
+                                            scope=plan.scope, source_id=source_id,
+                                            kind="unconfirmed" if uncertain else "deleted", previous=previous_review)
+                    reports.extend(comparison_reports(self.workspace, review))
+                progress(source_id, "Checking Garmin before preparing a new upload preview")
+                self._cancel(cancel)
+                self.accounts.garmin_activities(limit=100)
+                with self.accounts.garmin_connection() as reader:
+                    for activity_id in identities:
+                        self._cancel(cancel)
+                        if not reader.activity_missing(activity_id):
+                            raise SessionError("The previous activity is still present in Garmin.", code="retry_present")
+                    remote = reader.activities(limit=100)
                 if any(match_fit(report, remote, window_limit=100).status != "no_candidate_in_window" for report in reports):
                     raise SessionError("A matching Garmin activity is still listed. Wait and check Garmin again.", code="retry_match")
-                if self._legacy_exists((row["original_hash"], row["target_hash"]), deleted_ids=identities):
+                if self._legacy_exists((row["original_hash"], row["target_hash"]), deleted_ids=identities, review=review):
                     raise SessionError("Unclear or unrelated upload records remain. They cannot be bypassed by reopening this ride.", code="retry_uncertain")
+                if review and any(state.attempted(target, digest, scope=plan.scope, source_id=source_id,
+                                                  deleted_ids=identities, reviewed=review["attempts"])
+                                  for digest in {row["original_hash"], *review["files"].values()}):
+                    raise SessionError("An unrelated upload attempt still exists.", code="retry_uncertain")
                 self._cancel(cancel)
                 authorization = {"nonce": secrets.token_hex(16), "source_sha256": row["original_hash"],
                                  "target_account": target, "deleted_ids": identities, "used": False,
                                  "verified_at_utc": self.clock().isoformat()}
-                state.update(plan.scope, source_id, "retry_allowed", reason="deletion_verified",
+                if review is not None:
+                    encoded = json.dumps(review, sort_keys=True).encode()
+                    self.workspace.write("retry-review-" + authorization["nonce"] + ".json", encoded)
+                    authorization["review_hash"] = hashlib.sha256(encoded).hexdigest()
+                state.update(plan.scope, source_id, "retry_allowed", reason="absence_reviewed" if uncertain else "deletion_verified",
                              retry_authorization=json.dumps(authorization))
                 self._plan = None
         finally:

@@ -61,34 +61,32 @@ activity metadata and hashes, but omits Unit ID, credentials and signed URLs.
 
 ## Automatic time adjustment
 
-**Adjust times automatically** starts checked whenever the desktop app opens,
-even if it was previously disabled. You can uncheck it for the current run.
-Select the timezone where you trained once. For the supported faulty
-MyWhoosh exports, the tool interprets recorded clocks as local time and converts
-file creation, measurement, event, lap, session and Activity timestamps to UTC.
-It also repairs the Unix/FIT epoch mix-up in the local finish field. The finish
-anchor is session start plus elapsed duration, checked against measurement/stop
-metadata. Summer/winter offsets come from the workout date, never virtual GPS.
+**Adjust times automatically** starts checked whenever the desktop app opens.
+Select your timezone once. Automatic repair changes only the Activity UTC finish
+and local finish fields when the recording supports a consistent correction,
+including the demonstrated Unix/FIT epoch mix-up. The start, measurement timestamps,
+file-creation times, lap/session timestamps and sensor values are preserved.
 
-**Sync selected** shows each selected ride's old/new UTC start and finish and
-local finish before asking for upload confirmation. The TIME column summarizes
-**Corrected**, **Unchanged**, **Choose timezone**, **Time unavailable**, or
-**Original times**. Select a row to see details; there is no separate time-review
-step. The upload result retains the correction feedback.
+This restores the previously supported metadata-only behavior. Earlier builds
+selected a full local-to-UTC timeline conversion automatically; selecting a timezone
+alone does not establish whether the source clocks were local or UTC. That automatic
+selection has been removed. Explicit low-level conversion remains implemented, but
+is not selected by desktop sync. Files whose measurement clocks are mislabeled may
+therefore still need separate investigation; automatic finish repair does not fix
+or claim to fix their recording start.
 
-Uncheck the option to keep every original timestamp, including when using the
-Edge 530 device profile. Previous manual time approvals are retained as historical
-state but do not override the checkbox. Changing this option invalidates the
-preview. Every new copy is derived from the immutable original, so corrections
-never accumulate. Already correct recordings and unsupported non-MyWhoosh files
-remain unchanged. Missing required timezone or inconsistent, repeated/nonexistent
-DST clocks block automatic adjustment instead of choosing unsupported times.
+**Sync selected** shows old/new Activity UTC and local finish fields and states
+that recording start/measurement timestamps are unchanged. Uncheck the option to
+preserve every original time field. The TIME column reports the repair outcome.
+Missing timezone or contradictory finish evidence blocks automatic repair. UTC
+instants determine summer/winter local offsets using the workout date.
 
-Sensor values, durations, developer payloads and unknown fields are preserved.
-Compressed timestamps are expanded where needed. Garmin matching, read-back and
-the ride table use the corrected UTC start. Duplicate checks also compare original
-clocks and historical original/UTC-only/device variants. Already uploaded or
-uncertain rides remain protected when changing this option or timezone.
+Every prepared copy derives from the immutable original; corrections never
+accumulate. Original, metadata-only, device-profile and historical full-timeline
+variants remain covered by duplicate guards. Recent-activity matching also checks
+previously shifted timelines, including the final preflight before POST, so the
+compatibility correction cannot silently resend an old import under a new clock.
+Already uploaded or uncertain rides stay protected when changing settings.
 
 ## Local data and guards
 
@@ -100,6 +98,7 @@ Both locations are ignored by this repository's Git rules.
 | --- | --- |
 | `settings.json` | Date scope, ride limit, device profile, optional personal Unit ID and timezone |
 | `sync.sqlite3` | Per-account activity state, time feedback/approvals, file hashes, upload intents and Garmin IDs |
+| `retry-review-*.json` | Immutable audit of explicitly reviewed attempts, receipt hashes and previous FITs |
 | `*.original.fit` | Immutable downloaded original, named using the account/source ID hash |
 | `*.<SHA-256>.fit` | Separate copy when time metadata or device identity is changed |
 | `.sync.lock` | OS-managed process lock; released automatically on process exit |
@@ -134,30 +133,53 @@ Original and prepared file hashes are checked again before sending exact bytes.
 
 **Do not delete/edit the database or upload records to retry an unclear upload.**
 Check the ride directly in Garmin Connect. The desktop no longer asks users to
-copy activity IDs into a verification dialog. Uncertain upload records stay blocked;
-removing their local records is not a recovery procedure. Confirmed uploads that
-you deliberately deleted can use **Retry deleted**, described below.
+copy activity IDs into a verification dialog. Uncertain uploads stay blocked until an explicit manual review; removing their
+local records is not a recovery procedure. Use **Retry upload** as described below.
 
 **Stop** prevents further rides from being sent; an in-flight request finishes and
 its outcome is recorded. Closing during work waits for this before releasing the
 process lock. Unexpected termination leaves the pre-send intent for manual review.
 Confirmed source uploads remain skipped even if local FITs are later removed.
 
+### Retry an unconfirmed upload with current settings
+
+1. Check Garmin Connect **in your browser**, including the workout's actual date,
+   and confirm that the activity is missing. A timeout or HTTP 520 may still have
+   reached Garmin; absence from a bounded recent list is not proof of non-import.
+2. In **Sync rides**, change the device profile, Unit ID, timezone or time adjustment
+   if needed, then choose **Preview sync**. The old attempt remains blocked.
+3. Highlight that ride and choose **Retry upload**. Explicitly confirm the browser
+   check. The app checks any known Garmin IDs and matches the original and all
+   previously attempted FIT timelines against up to 100 recent Garmin activities.
+   A match, incomplete response, present ID or failed read blocks reopening.
+4. Review the fresh preview, prepared from the immutable original with the current
+   settings. Only the reviewed ride is selected. **Sync selected** requires a
+   separate confirmation before one new upload attempt.
+
+The absence review expires after 15 minutes. The one-use authorization is bound
+to the original hash and both accounts' scope. Its audit file records exact prior
+attempts and journal hashes; changing these records blocks the retry. Previous
+files and journal entries are kept, and a new attempt gets separate records.
+Historical corrected timelines are checked again immediately before POST, even
+when the new configuration changes the start time. Another unconfirmed outcome
+stops the batch and requires another explicit review; there is no automatic retry.
+
+Only recorded app attempts can be reviewed this way. Unrelated legacy records,
+damaged or missing FITs, and inconsistent receipts remain protected. A reviewed
+cached ride can be prepared even after it ages out of the source date window.
+
+`recorded_at_utc` in a journal is the UTC time the local upload record was written,
+not the workout's date. Yesterday's ride can have today's upload log.
+
 ### Re-upload after a manual deletion
 
-For a confirmed app upload with a known Garmin activity ID, run **Preview sync**,
-highlight the uploaded ride and choose **Retry deleted**. Confirm that you deleted
-it in Garmin Connect. The app requires an authenticated 404 for the exact previous
-ID and no matching activity among the latest 100. Authentication failures, timeouts
-and merely disappearing from that list do not confirm deletion.
-
-This prepares a fresh preview without uploading. Review the device profile and
-choose **Sync selected** to confirm the new upload. Deletion is checked again
-before sending. The one-use retry authorization is bound to the source hash and
-Garmin account and consumed durably before POST. Earlier attempts and journal
-records are preserved; new attempts receive separate records. Uncertain uploads
-remain blocked. Schema versions 1–4 migrate automatically to version 5 without
-resetting previous state.
+For a confirmed app upload with a known Garmin ID, preview, highlight the ride
+and choose **Retry upload**. Confirm that you deleted it. The app requires an
+authenticated 404 for the exact previous ID and no matching activity among the
+latest 100. Authentication failures, timeouts or simply disappearing from the
+list do not confirm deletion. A fresh preview and **Sync selected** confirmation
+are still required. Existing history is preserved. Schema versions 1–4 still
+migrate automatically to version 5 without resetting previous state.
 
 No provider data is relayed through a project server, and there is no telemetry.
 Next: user-run validation of real sync and saved sessions in the Windows app.

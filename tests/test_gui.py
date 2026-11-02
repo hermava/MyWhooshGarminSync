@@ -1,4 +1,5 @@
 import builtins
+import gc
 import os
 import time
 from datetime import datetime, timezone
@@ -212,6 +213,7 @@ def test_restore_is_not_started_when_window_is_closed():
 @pytest.mark.skipif(os.environ.get("MYWHOOSH_GUI_SMOKE_TEST") != "1",
                     reason="Opt-in test requiring Tk and a graphical desktop")
 def test_native_window_uses_masked_inputs_and_does_not_start_network_or_load_sessions():
+    gc.collect()  # Dispose prior Tk cycles on the UI thread, before any worker starts.
     tk = pytest.importorskip("tkinter")
     from tkinter import ttk
 
@@ -261,6 +263,7 @@ def test_native_window_uses_masked_inputs_and_does_not_start_network_or_load_ses
 @pytest.mark.skipif(os.environ.get("MYWHOOSH_GUI_SMOKE_TEST") != "1",
                     reason="Opt-in end-to-end GUI test requiring a graphical desktop")
 def test_native_sync_tab_previews_confirms_and_uploads_only_synthetic_data(tmp_path, monkeypatch):
+    gc.collect()
     tk = pytest.importorskip("tkinter")
     from tkinter import ttk, messagebox
     from mywhoosh_garmin_sync.desktop_controller import DesktopController
@@ -296,7 +299,7 @@ def test_native_sync_tab_previews_confirms_and_uploads_only_synthetic_data(tmp_p
         assert window.sync_tab.items["ride-0"].time_status == "corrected"
         assert window.sync_tab.timezone.get() == "Europe/Berlin"
         assert window.sync_tab.adjust_times.get() is True
-        assert window.sync_tab.items["ride-0"].start_utc == "2023-12-31T23:00:00+00:00"
+        assert window.sync_tab.items["ride-0"].start_utc == "2024-01-01T00:00:00+00:00"
         assert not hasattr(window.sync_tab, "verify_button")
         assert not hasattr(window.sync_tab, "time_button")
         assert not accounts.posts
@@ -318,9 +321,25 @@ def test_native_sync_tab_previews_confirms_and_uploads_only_synthetic_data(tmp_p
         tab.retry_button.invoke()
         wait_for(lambda: tab.plan is not None and not controller.busy)
         assert tab.items["ride-0"].status == "ready" and len(accounts.posts) == 1
+        accounts.mode = "http-520-after-write"
+        tab.upload()
+        wait_for(lambda: tab.items["ride-0"].status == "needs_review" and not controller.busy)
+        assert len(accounts.posts) == 2
+        accounts.remote.clear()
+        accounts.mode = "success"
+        tab._show_settings()
+        tab.adjust_checkbox.invoke()
+        tab.preview()
+        wait_for(lambda: tab.plan is not None and not controller.busy)
+        tab.tree.selection_set(next(iter(tab.row_ids)))
+        tab.retry_button.invoke()
+        wait_for(lambda: tab.plan is not None and not controller.busy)
+        assert tab.items["ride-0"].status == "ready" and tab.selected == {"ride-0"}
+        assert tab.items["ride-0"].start_utc == "2024-01-01T00:00:00+00:00"
+        assert len(accounts.posts) == 2
         tab.upload()
         wait_for(lambda: tab.items["ride-0"].status == "uploaded")
-        assert len(accounts.posts) == 2
+        assert len(accounts.posts) == 3
     finally:
         controller.close()
         controller.wait()
@@ -330,6 +349,7 @@ def test_native_sync_tab_previews_confirms_and_uploads_only_synthetic_data(tmp_p
 @pytest.mark.skipif(os.environ.get("MYWHOOSH_GUI_SMOKE_TEST") != "1",
                     reason="Opt-in saved GUI preferences test requiring a graphical desktop")
 def test_native_device_selection_survives_close_without_preview(tmp_path):
+    gc.collect()
     tk = pytest.importorskip("tkinter")
     from tkinter import ttk
     from mywhoosh_garmin_sync.desktop_controller import DesktopController
